@@ -1,0 +1,12 @@
+mesh_path: # unstructured grid file path e.g. "../../../../mesh.vtu"
+image_path: # if provided, will render this image of e.g. torso/surrounding anatomy e.g. "../../../../image.vti"
+image_scalar_name: # REQUIRED if image_path is provided, name of scalar array which is thresholded to create the image point cloud e.g. "ImageScalars"
+mesh_extraction_array_name: # if provided, will use this array to either extract an isosurface from the mesh (if animating) or clip the mesh e.g. "level_set"
+mesh_extraction_value: # The value of mesh_extraction_array_name below which the mesh is clipped or isosurface extracted, default: 0.0
+mesh_target_num_points: # target number of points for mesh decimation (if animation enabled). Default: 25000
+streamline_seed_pt_idx: # OPTIONAL - if provided, will use this point index to seed streamline generation
+velocity_array_name: # REQUIRED IF DRAWING STREAMLINES. E.g. velocity
+animation_enabled: # boolean to enable/disable animation
+initial_timestep: # starting timestep for animation. Default: 0
+final_timestep: # REQUIRED IF ANIMATION ENABLED. ending timestep for animation
+update_time: # time interval between animation updates in seconds. Default: 0.15s

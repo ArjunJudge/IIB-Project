@@ -1,0 +1,7 @@
+mesh_path:  # unstructured grid file path e.g. "../../../../mesh.vtu"
+skeleton_path:  # if provided, will use this skeleton for slicing e.g. "../../../../skel.vtp"
+velocity_array_name:  # expects array to be 3-component vector. E.g. velocity
+pressure_array_name:  # expect array to be scalar. E.g. pressure
+clip_array_name:   # if provided, will use this array to clip dataset e.g. "level_set"
+clip_value:  # The value of clip_array_name below which the mesh is clipped, default: 0.0
+streamline_seed_pt_idx: # if provided, will use this point index to seed streamline generation

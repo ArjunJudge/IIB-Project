@@ -12,8 +12,9 @@ import yaml
 
 class VTUViewer:
     def __init__(self, state, controller, mesh_path, skeleton_path,
-                 velocity_array_name, pressure_array_name,
-                 clip_array_name, streamline_seed_pt_idx, find_gradients_of=None):  # #TODO: Add streamline tracing option
+                       velocity_array_name, pressure_array_name,
+                       clip_array_name, streamline_seed_pt_idx,
+                       clip_value):  # #TODO: Add streamline tracing option
         """
         Initialize the VTU Viewer with VTK rendering setup.
         """
@@ -102,8 +103,12 @@ class VTUViewer:
         self.velocityName = velocity_array_name
         self.pressureName = pressure_array_name
         self.clippingName = clip_array_name
+        self.clipValue = clip_value
+        if self.clipValue is None:
+            print("No mesh extraction value specified, defaulting to 0.0")
+            self.clipValue = 0.0
         self.Q_running_total = 0  # accumulated volume flow rate through picked faces
-        self.find_gradients_of = find_gradients_of
+        #self.find_gradients_of = find_gradients_of
 
         """ RENDERING SETTINGS AND FILE READING """
         self.renderingObject, self.renderingStreamlines, self.doSlicing = False, False, False
@@ -210,7 +215,7 @@ class VTUViewer:
         clipper.SetInputData(self.objectGrid)
         # invert clipping to keep inside region
         clipper.InsideOutOn()
-        clipper.SetValue(0.0)
+        clipper.SetValue(self.clipValue)
         clipper.SetInputArrayToProcess(0, 0, 0, vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS, self.clippingName)
         clipper.Update()
         self.objectGrid = clipper.GetOutput()  # clipped grid
@@ -356,8 +361,9 @@ class VTUViewer:
         #    avg = self.calculate_value(array_name, self.slice, "average", None)
         #    total = self.calculate_value(array_name, self.slice, "total", None)
         #    print(f"Slice - Average {array_name}: {np.round(avg,2)}, Total {array_name}: {np.round(total,2)}")
-        average_pressure = self.calculate_value(self.pressureName, self.slice, "average", None)
-        print(f"Average Pressure on Slice: {np.round(average_pressure,2)}Pa")       
+        if self.doPressureCalcs:
+            average_pressure = self.calculate_value(self.pressureName, self.slice, "average", None)
+            print(f"Average Pressure on Slice: {np.round(average_pressure,2)}Pa")       
         self.sliceMapper.SetInputData(self.slice)
         self.sliceActor.SetVisibility(True)
         self.surfaceActor.SetVisibility(True)
@@ -663,7 +669,7 @@ class VTUViewer:
                     raise ValueError(f"Velocity array '{self.velocityName}' not found in object grid.")
                 else:
                     self.doVelocityCalcs = True
-            if self.doPressureCalcs is True:
+            if self.pressureName:
                 if self.pressureName not in self.array_names.keys():
                     raise ValueError(f"Pressure array '{self.pressureName}' not found in object grid.")
                 else:
@@ -672,6 +678,8 @@ class VTUViewer:
             self.renderer.AddActor(self.surfaceActor)
 
         if self.renderingStreamlines is True:
+            print("Setting up streamlines...")
+            self.add_streamlines()
             self.renderer.AddActor(self.streamlineActor)
         
         if self.doSlicing is True:
@@ -748,8 +756,9 @@ def main():
     velocity_array_name = config.get("velocity_array_name")
     pressure_array_name = config.get("pressure_array_name")
     clip_array_name = config.get("clip_array_name")
-    streamline_seed_pt_idx = config.get("streamline_seed_point_index")
+    streamline_seed_pt_idx = config.get("streamline_seed_pt_idx")
     #find_gradients_of = config.get("find_gradients_of", [])
+    clip_value = config.get("clip_value")
 
     print("Mesh Path:", mesh_path)
     print("Skeleton Path:", skeleton_path)
@@ -758,6 +767,7 @@ def main():
     print("Clip Array Name:", clip_array_name)
     print("Streamline Seed Point Index:", streamline_seed_pt_idx)
     #print("Find Gradients Of:", find_gradients_of)
+    print("Clip Value:", clip_value)
 
     server = get_server()
     state = server.state
@@ -765,7 +775,8 @@ def main():
 
     viewer = VTUViewer(state, controller, mesh_path, skeleton_path,
                        velocity_array_name, pressure_array_name,
-                       clip_array_name, streamline_seed_pt_idx)
+                       clip_array_name, streamline_seed_pt_idx,
+                       clip_value)
 
     #state.log_text = ""
     #def gui_print(*args, **kwargs):
@@ -785,6 +796,8 @@ def main():
 
     state.representation_options = ["Surface", "Wireframe", "Points"]  # Surface, Wireframe, Points
     state.representation = "Surface"  # default to Surface
+
+    state.show_streamlines = True
 
     for name in viewer.array_names.keys():
         state.colour_options.append(name)
@@ -850,6 +863,15 @@ def main():
     #    viewer.Q_running_total = 0  # reset accumulated flow rate
     #    controller.view_update()
 
+    @state.change("show_streamlines")
+    def toggle_streamlines(show_streamlines, **kwargs):
+        if viewer.renderingStreamlines is True:
+            if show_streamlines:
+                viewer.streamlineActor.SetVisibility(1)
+            else:
+                viewer.streamlineActor.SetVisibility(0)
+            controller.view_update()
+
     with SinglePageLayout(server) as layout:
         # Toolbar
         with layout.toolbar:
@@ -895,6 +917,17 @@ def main():
         #        style="max-width: 300px",
         #        label="Timestep"
         #    )
+
+        if viewer.renderingStreamlines is True:
+            with layout.toolbar:
+                v3.VSpacer()
+                # button to toggle streamlines
+                v3.VCheckbox(
+                    v_model="show_streamlines",
+                    label="Show Streamlines",
+                    hide_details=True,
+                    dense=True,
+                )
 
         # VTK view content
         with layout.content:

@@ -62,11 +62,10 @@ class VTUViewer:
             self.surfaceExtractionFilter = vtk.vtkDataSetSurfaceFilter()
             self.meshExtractionArrayName = mesh_extraction_array_name
             self.meshTargetNumPoints = mesh_target_num_points if mesh_target_num_points else 25000
-            if mesh_extraction_value is None:
+            self.meshExtractionValue = mesh_extraction_value
+            if self.meshExtractionValue is None:
                 print("No mesh extraction value specified, defaulting to 0.0")
                 self.meshExtractionValue = 0.0
-            else:
-                self.meshExtractionValue = mesh_extraction_value
             self.lut = vtk.vtkLookupTable()
             self.lut.SetNumberOfTableValues(256)
             colour_tf = vtk.vtkColorTransferFunction()
@@ -667,6 +666,7 @@ def main():
             else:
                 viewer.streamlineActor.SetVisibility(0)
             controller.view_update()
+
     with SinglePageLayout(server) as layout:
         # Toolbar
         with layout.toolbar:
