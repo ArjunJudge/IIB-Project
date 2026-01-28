@@ -1,5 +1,26 @@
 # IIB-Project
 
+## Requirements
+
+### Visualization Core
+`vtk`
+
+### Trame Web Framework
+`trame`
+`trame-vuetify`
+`trame-vtk`
+
+### Data Processing
+`numpy`
+`PyYAML`
+
+## Installation:
+`pip install vtk trame trame-vuetify trame-vtk numpy PyYAML`
+
+## How to Run:
+`local_python_path path_to_script.py path_to_config_file.yaml`
+
+
 ## Local View
 
 Ideal for fast transformations and optimal visualisation.
