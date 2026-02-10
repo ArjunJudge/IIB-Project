@@ -282,7 +282,9 @@ class VTUViewer:
 
         self.fig = go.FigureWidget()
         self.fig.add_scatter(x=[], y=[], mode='lines+markers', name=f"Branch {i+1}")
-        self.fig.update_layout(template="plotly_dark", margin=dict(l=20, r=20, t=40, b=20))
+        self.fig.update_layout(template="plotly_dark", margin=dict(l=20, r=20, t=40, b=20),
+                               xaxis_title="Arc Length Along Skeleton",
+                               yaxis_title="")
         self.state.plot = self.fig.to_dict()
 
         self.compute_centerline = True
@@ -537,27 +539,28 @@ class VTUViewer:
         """
         Plot the probed data along the skeleton.
         """
-        if not self.current_picked_skeleton_line_id:
+        if self.current_picked_skeleton_line_id is None:
             print("No skeleton line picked for plotting.")
             return
-        array_name = self.state.selected_colour
-        if self.array_names.get(self.state.selected_colour) == "Vector":
-            array_name = f"{self.state.selected_colour}_{self.state.selected_component}"
-        else:
-            array_name = self.state.selected_colour
-        if array_name is None or array_name == "No Colouring":
-            array_name = self.pressureName
+        #array_name = self.state.selected_colour
+        #if self.array_names.get(self.state.selected_colour) == "Vector":
+        #    array_name = f"{self.state.selected_colour}_{self.state.selected_component}"
+        #else:
+        #    array_name = self.state.selected_colour
+        #if array_name is None or array_name == "No Colouring":
+        array_name = self.pressureName
         cell = self.skeletonProbe.GetOutput().GetCell(self.current_picked_skeleton_line_id)
         cell_point_ids = cell.GetPointIds()
         point_indices_list = [cell_point_ids.GetId(i) for i in range(cell_point_ids.GetNumberOfIds())]
         numpy_ids = np.array(point_indices_list)
-        arc_length_array = numpy_support.vtk_to_numpy(self.skeleton.GetPointData().GetArray("Abscissas"))
-        # extract only cell_point_ids from the arc_length_array
+        arc_length_array = numpy_support.vtk_to_numpy(self.skeleton.GetPointData().GetArray("Abscissas"))  # Abscissas is the arc length array name when skeleton is generated with VMTK
         arc_length_array = list(arc_length_array[numpy_ids])
         val_array = list(numpy_support.vtk_to_numpy(self.skeletonProbe.GetOutput().GetPointData().GetArray(array_name))[numpy_ids])
         with self.fig.batch_update():
             self.fig.data[0].x = arc_length_array
             self.fig.data[0].y = val_array
+            self.fig.update_layout(title=f"{array_name} Along Branch {self.current_picked_skeleton_line_id}",
+                                   yaxis_title=array_name)
         self.state.plot = self.fig.to_dict()
         self.state.flush()
 
@@ -1251,7 +1254,7 @@ class VTUViewer:
                 #sphere_source.actor.SetPosition(avg_point/num_cell_points)
                 #sphere_source.actor.SetVisibility(1)
                 #self.renderer.AddActor(sphere_source.actor)
-                #self.controller.view_update()
+                self.controller.view_update()
         else:
             return
 
@@ -1366,7 +1369,7 @@ def main():
             state.component_options = ["mag"]
             state.selected_component = "mag"
         state.flush()
-        viewer.plot_probed_data()
+        #viewer.plot_probed_data()
         #if viewer.sliceActor.GetVisibility() == 1 and selected_colour != "vWSS[dyn/cm^2]":
         #    viewer.set_colouring_by_dataset(array_to_colour_by, viewer.slice, viewer.sliceMapper)
         viewer.set_colouring_by_dataset(array_to_colour_by, viewer.objectSurface, viewer.surfaceMapper)
@@ -1382,7 +1385,7 @@ def main():
             array_to_colour_by = state.selected_colour        
         #if viewer.sliceActor.GetVisibility() == 1 and state.selected_colour != "vWSS[dyn/cm^2]":
         #    viewer.set_colouring_by_dataset(array_to_colour_by, viewer.slice, viewer.sliceMapper)
-        viewer.plot_probed_data()
+        #viewer.plot_probed_data()
         viewer.set_colouring_by_dataset(array_to_colour_by, viewer.objectSurface, viewer.surfaceMapper)
         viewer.update_scalar_bar()
         controller.view_update()  
