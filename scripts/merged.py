@@ -1263,8 +1263,6 @@ class VTUViewer:
         self.view = trame_vtk.VtkLocalView(self.render_window,
                                   picking_modes=("picking_modes", []),
                                   click=(self.on_click, "[$event]"),
-                                  auto_update=False,
-                                  ref="my_view",
                                   )
         self.controller.view_update = self.view.update
 
@@ -1336,7 +1334,7 @@ def main():
     state.show_streamlines = True
     state.show_plot = False
     state.vWSS_glyph_scale = 0.005
-    state.picking_modes = ["click", "hover"]
+    state.picking_modes = ["click"]
     state.do_picking = False
     state.show_plot = False
     state.fig = viewer.fig.to_dict()
