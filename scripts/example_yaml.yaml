@@ -1,0 +1,15 @@
+mesh_path: <path_to_mesh.vtu>
+image_path: <path_to_image.vti>
+skeleton_path: <path_to_skeleton.vtp>
+mesh_extraction_array_name: name of array to use for mesh extraction e.g. "sdf"
+mesh_extraction_value: value to use for mesh extraction. Default is 0.0
+image_scalar_name: name of scalar array in image to use for coloring e.g. "ImageScalars"
+velocity_array_name: name of velocity array e.g. "Velocity"
+pressure_array_name: name of pressure array e.g. "Pressure"
+mesh_target_num_points: target number of points for the extracted mesh. Default is 25000
+streamline_seed_pt_idx: index of the seed point for streamlines
+animation_enabled: Boolean to enable or disable animation. Default is False.
+initial_timestep: initial timestep for animation. Default is 0.0.
+final_timestep: final timestep for animation. Must be provided if animation is enabled.
+update_time: time interval for animation updates in seconds. Default is 0.15 seconds.
+mu: dynamic viscosity value. Default is 0.004 Pa.s
