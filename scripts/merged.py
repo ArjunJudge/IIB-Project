@@ -1,7 +1,8 @@
+import builtins
 import vtk
 from trame.app import get_server
 from trame.ui.vuetify3 import SinglePageLayout
-from trame.widgets import vuetify3 as v3, vtk as trame_vtk
+from trame.widgets import vuetify3 as v3, vtk as trame_vtk, html
 import os
 import numpy as np
 import asyncio
@@ -12,98 +13,16 @@ from collections import deque
 import plotly.graph_objects as go
 from trame_plotly.widgets import plotly
 
-class Scatter3DPlot:
-    def __init__(self, mesh, state):
-        self.state = state
-        self.arrays, self.array_names = self.extract_arrays(mesh)
-        self.x, self.y, self.z = self.get_xyz_coordinates(mesh)
-        self.fig = self.create_figure()
-    
-    def get_xyz_coordinates(self, mesh):
-        points = mesh.GetPoints()
-        x = numpy_support.vtk_to_numpy(points.GetData())[:, 0]
-        y = numpy_support.vtk_to_numpy(points.GetData())[:, 1]
-        z = numpy_support.vtk_to_numpy(points.GetData())[:, 2]
-        return x, y, z
-    
-    def extract_arrays(self, mesh):
-        arrays, array_names = [], []
-        point_data = mesh.GetPointData()
-        num_arrays = point_data.GetNumberOfArrays()
-        for i in range(num_arrays):
-            array_name = point_data.GetArrayName(i)
-            print(f"Extracting array: {array_name}")
-            array = point_data.GetArray(array_name)
-            if array.GetNumberOfComponents() != 1:
-                continue
-            array_names.append(array_name)
-            arrays.append(numpy_support.vtk_to_numpy(array))
-        return arrays, array_names
-
-    def create_figure(self):
-        # Prepare the matrix for customdata
-        print("Arrays: ", self.arrays)
-        data = np.stack(self.arrays, axis=-1)
-    
-        hover_lines = []
-        for i, name in enumerate(self.array_names):
-            hover_lines.append(f"{name}: %{{customdata[{i}]:.1f}}")
-        scatter1 = go.Scatter3d(
-            x=self.x,
-            y=self.y,
-            z=self.z,
-            mode='markers',
-            marker=dict(size=3, color='white', opacity=0.8),
-            customdata=data, 
-            hovertemplate=hover_lines[0],  # default to first array
-            name="Data"
-        )
-        fig = go.Figure(
-            data=[scatter1]
-        )
-        fig.update_layout(
-            template="plotly_dark",
-            scene=dict(aspectmode='data',
-                       xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", showbackground=False),
-                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", showbackground=False),
-                        zaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title="", showbackground=False),),
-            margin=dict(l=0, r=0, b=0, t=30),
-            updatemenus=[{
-            "buttons": [
-                {
-                    "label": str(self.array_names[i]),
-                    "method": "update",
-                    "args": [{"hovertemplate": [hover_lines[i]]}]
-                }
-                for i in range(len(self.array_names))
-            ],
-            "direction": "down",
-            "showactive": True,
-            "type": "dropdown",
-            "x": 0.05,
-            "xanchor": "left",
-            "y": 1.15,
-            "yanchor": "top",
-            "pad": {"r": 10, "t": 10},
-            "bgcolor": "#333333",
-            "bordercolor": "#555555",
-            "font": {"color": "white", "size": 12}
-            }],
-            )
-        
-        return fig
-
 class SphereSourceCustom:
     def __init__(self):
         super().__init__()
-        skeletonSphereSource = vtk.vtkSphereSource()
-        skeletonSphereMapper = vtk.vtkPolyDataMapper()
+        self.skeletonSphereSource = vtk.vtkSphereSource()
+        self.skeletonSphereMapper = vtk.vtkPolyDataMapper()
         self.actor = vtk.vtkActor()
-        skeletonSphereSource.SetRadius(0.05)
-        skeletonSphereMapper.SetInputConnection(skeletonSphereSource.GetOutputPort())
-        self.actor.SetMapper(skeletonSphereMapper)
-        self.actor.GetProperty().SetColor(0.0, 1.0, 1.0)  # cyan
-        self.actor.SetVisibility(False)  # initially hidden
+        self.skeletonSphereSource.SetRadius(0.1)
+        self.skeletonSphereMapper.SetInputConnection(self.skeletonSphereSource.GetOutputPort())
+        self.actor.SetMapper(self.skeletonSphereMapper)
+        self.actor.SetVisibility(False)
 
 class VTUViewer:
     def __init__(self, state, controller, mesh_path,
@@ -151,6 +70,7 @@ class VTUViewer:
             print("No dynamic viscosity specified, defaulting to 0.004")
             self.mu = 0.004
         self.current_picked_skeleton_line_id = None
+        self.overlayActor = None
 
         """ OBJECT ACTORS, FILTERS AND MAPPERS SETUP """
         if mesh_path:
@@ -161,7 +81,7 @@ class VTUViewer:
             self.surfaceMapper.SetScalarModeToUsePointFieldData()
             self.surfaceMapper.SetColorModeToMapScalars()
             self.surfaceActor.SetMapper(self.surfaceMapper)
-            self.surfaceActor.GetProperty().SetColor(0.0, 1.0, 0.0)  # green
+            self.surfaceActor.GetProperty().SetColor(1.0, 1.0, 1.0)
             self.surfaceActor.SetVisibility(True)
             self.contourFilter = vtk.vtkContourFilter()
             self.clipFilter = vtk.vtkClipDataSet()
@@ -180,6 +100,10 @@ class VTUViewer:
             self.surface_cell_norms_np = None
             self.lut = vtk.vtkLookupTable()
             self.lut.SetNumberOfTableValues(256)
+            self.overlayLut = vtk.vtkLookupTable()
+            self.overlayLut.SetNumberOfTableValues(256)
+            self.sliceLut = vtk.vtkLookupTable()
+            self.sliceLut.SetNumberOfTableValues(256)
             colour_tf = vtk.vtkColorTransferFunction()
             colour_tf.SetColorSpaceToRGB()  # ensures smooth RGB interpolation
             # Add colors at key points (0=blue, 0.33=light blue, 0.66=light orange, 1=red)
@@ -191,11 +115,12 @@ class VTUViewer:
             for i in range(256):
                 rgb = list(colour_tf.GetColor(i / 255.0)) + [1.0]  # [R, G, B, A]
                 self.lut.SetTableValue(i, *rgb)  # Set RGBA values. note the * unpacks the list
+                self.overlayLut.SetTableValue(i, *rgb)
+                self.sliceLut.SetTableValue(i, *rgb)
             # Attach to mapper
             self.surfaceMapper.SetLookupTable(self.lut)
             self.colour_ranges = {}
             self.scalar_bar = vtk.vtkScalarBarActor()
-            self.scalar_bar.SetLookupTable(self.lut)
             self.scalar_bar.SetVisibility(True)
 
         """ IMAGE DATA SETUP """
@@ -209,12 +134,12 @@ class VTUViewer:
         self.sliceMapper = vtk.vtkPolyDataMapper()
         self.sliceActor = vtk.vtkActor()
         self.sliceActor.SetMapper(self.sliceMapper)
-        self.sliceActor.GetProperty().SetColor(1.0, 1.0, 0.0)  # yellow
+        self.sliceActor.GetProperty().SetColor(1.0, 1.0, 1.0)  # white
         self.sliceActor.SetVisibility(False)
         self.slice_cell_areas_np = None
         self.slice_pt_norms_np = None
         self.slice_cell_norms_np = None
-        self.sliceMapper.SetLookupTable(self.lut)
+        self.sliceMapper.SetLookupTable(self.sliceLut)
         self.plane = vtk.vtkPlane()
         self.planeCutter = vtk.vtkPlaneCutter()
         cleaner = vtk.vtkCleanPolyData()  # NEEDED FOR VTK 9.2.6 CONNECTIVITY FILTER BUG
@@ -234,6 +159,7 @@ class VTUViewer:
             self.seedSource = vtk.vtkPointSource()
             self.streamlineSeedPointIndex = streamline_seed_pt_idx
             self.streamlineActor = vtk.vtkActor()
+            self.streamline_mapper = vtk.vtkPolyDataMapper()
 
         """ TIMESTEP AND ANIMATION SETTINGS """
         self.animating = False
@@ -252,6 +178,7 @@ class VTUViewer:
                 raise ValueError("Final timestep must be specified for animation.")
             self.max_timestep = final_timestep
             self.cached_contours = []  # to store precomputed contours
+            self.cached_streamlines = []  # to store precomputed streamlines
 
         """ SKELETON DATASET SETUP """
         self.skeleton = vtk.vtkPolyData()
@@ -281,9 +208,9 @@ class VTUViewer:
             self.renderingStreamlines = True
 
         self.fig = go.FigureWidget()
-        self.fig.add_scatter(x=[], y=[], mode='lines+markers', name=f"Branch {i+1}")
+        self.fig.add_scatter(x=[], y=[], mode='lines+markers', name=f"Branch {i+1}", line=dict(color='white', width=2))
         self.fig.update_layout(template="plotly_dark", margin=dict(l=20, r=20, t=40, b=20),
-                               xaxis_title="Arc Length Along Skeleton",
+                               xaxis_title="Arc Length Along Centerline (cm)",
                                yaxis_title="")
         self.state.plot = self.fig.to_dict()
 
@@ -292,14 +219,20 @@ class VTUViewer:
             self.doProbing = True
             self.doSlicing = True
             self.file_reader(skeleton_path)
-            self.setup_skeleton(skeleton_path_provided=True)
+            self.setup_skeleton()
             self.compute_centerline = False
 
         self.setup_grids_arrays_actors()
     
-    def setup_skeleton(self, skeleton_path_provided=False):
+    def setup_skeleton(self):
         """
+        Setup the skeleton for visualization.
         """
+        # clean skeleton
+        cleaner = vtk.vtkCleanPolyData()
+        cleaner.SetInputData(self.skeleton)
+        cleaner.Update()
+        self.skeleton = cleaner.GetOutput()
         self.setup_skeleton_with_cells()
         self.doProbing = True
         self.skeleton_mapper = vtk.vtkPolyDataMapper()
@@ -311,11 +244,47 @@ class VTUViewer:
         self.skeletonProbe = vtk.vtkProbeFilter()
         print("Probing along skeleton...")
         self.renderer.AddActor(self.skeletonActor)
-        self.sphereSources = []
+        self.sphereSources = [SphereSourceCustom(), SphereSourceCustom()]
+        self.sphereSources[0].actor.GetProperty().SetColor(0.0, 1.0, 1.0)  # cyan
+        self.sphereSources[1].actor.GetProperty().SetColor(0.0, 1.0, 1.0)  # cyan
+        for sphere_source in self.sphereSources:
+            self.renderer.AddActor(sphere_source.actor)
         self.skeletonCellLocator = vtk.vtkStaticCellLocator()
         print("Building cell locator for skeleton...")
         self.skeletonCellLocator.SetDataSet(self.skeleton)
         self.skeletonCellLocator.BuildLocator()
+        print("Setting up probing along skeleton...")
+        self.probe_along_skeleton()
+        # selected skeleton cell for separate overlay
+        self.extractedCellIds = vtk.vtkIdList()
+        self.extractedCellIds.InsertNextId(0)  # dummy id to initialise
+        self.extractCellFilter = vtk.vtkExtractCells()
+        self.extractCellFilter.SetInputData(self.skeletonProbe.GetOutput())
+        self.extractCellFilter.SetCellList(self.extractedCellIds)
+        self.extractCellFilter.Update()
+        self.overlayMapper = vtk.vtkDataSetMapper()
+        self.overlayMapper.SetInputConnection(self.extractCellFilter.GetOutputPort())
+        self.overlayMapper.SetLookupTable(self.overlayLut)
+        self.overlayActor = vtk.vtkActor()
+        self.overlayActor.SetMapper(self.overlayMapper)
+        self.overlayActor.SetVisibility(False)
+        self.overlayActor.GetProperty().SetRepresentationToPoints()
+        self.overlayActor.GetProperty().SetPointSize(5)
+        self.renderer.AddActor(self.overlayActor)
+        self.overlayRendered = False
+
+        self.pointLocator = vtk.vtkPointLocator()
+        self.pointLocator.SetDataSet(self.skeleton_with_cells)
+        self.pointLocator.BuildLocator()
+
+        # for each cell in self.skeleton, get the point id list of each
+        self.skeleton_cell_point_ids = []
+        for i in range(self.skeleton.GetNumberOfCells()):
+            cell = self.skeleton.GetCell(i)
+            point_ids = []
+            for j in range(cell.GetNumberOfPoints()):
+                point_ids.append(cell.GetPointId(j))
+            self.skeleton_cell_point_ids.append(point_ids)
 
     def setup_arrays_in_dataset(self, dataset):
         """
@@ -359,13 +328,12 @@ class VTUViewer:
         self.seedSource.SetNumberOfPoints(500)
         self.seedSource.SetRadius(1.0)
         self.streamTracer.SetSourceConnection(self.seedSource.GetOutputPort())
-        streamline_mapper = vtk.vtkPolyDataMapper()
-        streamline_mapper.SetInputConnection(self.streamTracer.GetOutputPort())
-        streamline_mapper.ScalarVisibilityOff()
-        self.streamlineActor.SetMapper(streamline_mapper)
+        self.streamline_mapper.SetInputConnection(self.streamTracer.GetOutputPort())
+        self.streamline_mapper.ScalarVisibilityOff()
+        self.streamlineActor.SetMapper(self.streamline_mapper)
         self.streamlineActor.GetProperty().SetColor(1.0, 1.0, 1.0)  # white
     
-    def set_colouring_by_dataset(self, data_set_array_name, data_set, mapper):
+    def set_colouring_by_dataset(self, data_set_array_name, data_set, mapper, lut=None):
         """
         Set the colouring of the mapper based on the specified dataset array name.
         """
@@ -376,18 +344,28 @@ class VTUViewer:
             self.state.flush()
             mapper.ScalarVisibilityOff()
             return
-        min, max = data_set.GetPointData().GetArray(data_set_array_name).GetRange()
-        self.lut.SetRange(min, max)
-        self.lut.Build()
-        mapper.SetInterpolateScalarsBeforeMapping(0)
-        mapper.StaticOn()
+        if data_set_array_name in self.colour_ranges and self.state.animation is True:
+            min, max = self.colour_ranges[data_set_array_name]
+        else:
+            min, max = data_set.GetPointData().GetArray(data_set_array_name).GetRange()
+        if lut is None:
+            lut = self.lut
+        lut.SetRange(min, max)
+        lut.Build()
+        self.scalar_bar.SetLookupTable(lut)
+        if lut != self.overlayLut:  # only show scalar bar for surface or slice, not overlay
+            if data_set_array_name[0:8] == "velocity":
+                self.scalar_bar.SetTitle(data_set_array_name + " (cm/s)")
+            elif data_set_array_name[0:8] == "pressure":
+                self.scalar_bar.SetTitle(data_set_array_name + " (mmHg)")
+            else:
+                self.scalar_bar.SetTitle(data_set_array_name)
+            self.scalar_bar.SetVisibility(1)
         mapper.SetScalarRange(min, max)
         mapper.SetColorModeToMapScalars()  # essential to enable colour mapping
         mapper.SetScalarModeToUsePointFieldData()
         mapper.SelectColorArray(data_set_array_name)
         mapper.ScalarVisibilityOn()  # controls whether to colour by scalars
-        self.scalar_bar.SetTitle(data_set_array_name)
-        self.scalar_bar.SetVisibility(1)
     
     async def animate(self):
         """Animate the render window by updating it periodically."""
@@ -424,22 +402,22 @@ class VTUViewer:
             self.decimateFilter.Update()
             self.surfaceMapper.SetInputConnection(self.decimateFilter.GetOutputPort())
             self.surfaceMapper.Update()
-        else:  # not animating
-            if self.meshExtractionArrayName is not None:  # clip to get surface if extraction array given
-                self.clipFilter.SetInputData(self.objectGrid)
-                self.clipFilter.SetInputArrayToProcess(
-                    0, 0, 0, vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS, array_name
-                )
-                self.clipFilter.SetValue(self.meshExtractionValue)
-                self.clipFilter.InsideOutOn()
-                self.clipFilter.Update()
-                self.objectGrid = self.clipFilter.GetOutput()
-                self.surfaceExtractionFilter.SetInputData(self.clipFilter.GetOutput())
-            else:  # otherwise get full surface
-                self.surfaceExtractionFilter.SetInputData(self.objectGrid)
-            self.surfaceExtractionFilter.Update()
-            self.surfaceMapper.SetInputConnection(self.surfaceExtractionFilter.GetOutputPort())
-            self.surfaceMapper.Update()
+        #else:  # not animating
+        if self.meshExtractionArrayName is not None:  # clip to get surface if extraction array given
+            self.clipFilter.SetInputData(self.objectGrid)
+            self.clipFilter.SetInputArrayToProcess(
+                0, 0, 0, vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS, array_name
+            )
+            self.clipFilter.SetValue(self.meshExtractionValue)
+            self.clipFilter.InsideOutOn()
+            self.clipFilter.Update()
+            self.objectGrid = self.clipFilter.GetOutput()
+            self.surfaceExtractionFilter.SetInputData(self.clipFilter.GetOutput())
+        else:  # otherwise get full surface
+            self.surfaceExtractionFilter.SetInputData(self.objectGrid)
+        self.surfaceExtractionFilter.Update()
+        self.surfaceMapper.SetInputConnection(self.surfaceExtractionFilter.GetOutputPort())
+        self.surfaceMapper.Update()
         self.objectSurface = self.surfaceMapper.GetInput()
     
     def precompute_animation_surfaces(self):
@@ -458,12 +436,11 @@ class VTUViewer:
             polydata = vtk.vtkPolyData()
             polydata.DeepCopy(self.decimateFilter.GetOutput())
             self.cached_contours.append(polydata)
-            # calculate global colour range for this dataset and update if needed
-            self.populate_colour_ranges(polydata)
+        self.populate_colour_ranges(self.objectGrid)
+        print("cached contours:", len(self.cached_contours))
     
     def populate_colour_ranges(self, dataset):
         """
-        Populate the colour ranges for velocity and pressure datasets in the given dataset.
         """
         for arr_name in self.colour_ranges.keys():
             array = dataset.GetPointData().GetArray(arr_name)
@@ -529,47 +506,80 @@ class VTUViewer:
         self.skeletonProbe.SetInputData(self.skeleton)
         self.skeletonProbe.SetSourceData(self.objectGrid)
         self.skeletonProbe.Update()
-        self.scatter3D = Scatter3DPlot(
-            self.skeletonProbe.GetOutput(),
-            self.state
-        )
+        #self.scatter3D = Scatter3DPlot(
+        #    self.skeletonProbe.GetOutput(),
+        #    self.state
+        #)
         self.probe_ids = np.array([], dtype=int)
+        self.arc_length_array = numpy_support.vtk_to_numpy(self.skeleton.GetPointData().GetArray("Abscissas"))
+        self.pressure_array = numpy_support.vtk_to_numpy(self.skeletonProbe.GetOutput().GetPointData().GetArray(self.pressureName))
 
-    def plot_probed_data(self):
+    def plot_probed_data(self, changed=True):
         """
         Plot the probed data along the skeleton.
         """
         if self.current_picked_skeleton_line_id is None:
             print("No skeleton line picked for plotting.")
             return
-        #array_name = self.state.selected_colour
-        #if self.array_names.get(self.state.selected_colour) == "Vector":
-        #    array_name = f"{self.state.selected_colour}_{self.state.selected_component}"
-        #else:
-        #    array_name = self.state.selected_colour
-        #if array_name is None or array_name == "No Colouring":
-        array_name = self.pressureName
+        if changed is True:
+            self.extractedCellIds.Reset()
+            self.extractedCellIds.InsertNextId(self.current_picked_skeleton_line_id)
+            self.extractCellFilter.SetCellList(self.extractedCellIds) 
+            self.extractCellFilter.Update()
+            self.overlayRendered = True
+            #if len(self.probe_ids) != 2:
+            self.set_colouring_by_dataset(self.pressureName, self.extractCellFilter.GetOutput(), self.overlayMapper, lut=self.overlayLut)
+        self.overlayActor.SetVisibility(True)
         cell = self.skeletonProbe.GetOutput().GetCell(self.current_picked_skeleton_line_id)
         cell_point_ids = cell.GetPointIds()
         point_indices_list = [cell_point_ids.GetId(i) for i in range(cell_point_ids.GetNumberOfIds())]
         numpy_ids = np.array(point_indices_list)
-        arc_length_array = numpy_support.vtk_to_numpy(self.skeleton.GetPointData().GetArray("Abscissas"))  # Abscissas is the arc length array name when skeleton is generated with VMTK
-        arc_length_array = list(arc_length_array[numpy_ids])
-        val_array = list(numpy_support.vtk_to_numpy(self.skeletonProbe.GetOutput().GetPointData().GetArray(array_name))[numpy_ids])
+        start_id, end_id = numpy_ids[0], numpy_ids[-1]
+        if len(self.probe_ids) == 2:
+            # slice numpy_ids to only include points between the two probe points
+            start_id, end_id = min(self.probe_ids), max(self.probe_ids)
+            numpy_ids = numpy_ids[(numpy_ids >= start_id) & (numpy_ids <= end_id)]
+            self.state.p_drop = np.round(np.abs(self.state.p1 - self.state.p2), 2)
+        else:
+            self.state.p_drop = None
+        arc_length_array = self.arc_length_array[numpy_ids]
+        pressure_array = self.pressure_array[numpy_ids]
+        # define branch pressure array (of the whole current branch) for colouring the plot, which is just the pressure values at all skeleton points along the branch of the currently picked line
+        branch_pressure_array = self.pressure_array[self.skeleton_cell_point_ids[self.current_picked_skeleton_line_id]]
         with self.fig.batch_update():
             self.fig.data[0].x = arc_length_array
-            self.fig.data[0].y = val_array
-            self.fig.update_layout(title=f"{array_name} Along Branch {self.current_picked_skeleton_line_id}",
-                                   yaxis_title=array_name)
+            self.fig.data[0].y = pressure_array
+            self.fig.update_layout(title=f"{self.pressureName} Along Branch {self.current_picked_skeleton_line_id}",
+                                   yaxis_title=self.pressureName + " (mmHg)")
+            self.fig.update_traces(
+                marker=dict(
+                    color=pressure_array,
+                    colorscale=self.vtk_lut_to_plotly(),
+                    #showscale=True,
+                    cmin=np.min(branch_pressure_array),
+                    cmax=np.max(branch_pressure_array),
+                )
+            )
         self.state.plot = self.fig.to_dict()
         self.state.flush()
+
+    def vtk_lut_to_plotly(self):
+        """
+        Convert the VTK lookup table to a Plotly colorscale format.
+        """
+        return [
+            [0.0,  "rgb(0, 0, 255)"],  # Blue
+            [0.33, "rgb(153, 204, 255)"],  # Light Blue
+            [0.66, "rgb(255, 178, 102)"],  # Light Orange
+            [1.0,  "rgb(255, 0, 0)"]  # Red
+        ]
 
     def on_mesh_click(self, cellId):
         """
         Handle right click event to pick a cell.
         """
         picked_cell_id = cellId
-        print(f"Picked cell id: {picked_cell_id}")
+        #print(f"Picked cell id: {picked_cell_id}")
         if picked_cell_id >= 0:
             pickedCell = self.objectSurface.GetCell(picked_cell_id)
             cellNormal = self.surface_cell_norms_np[picked_cell_id]
@@ -586,23 +596,25 @@ class VTUViewer:
                     picked_point_id = point_id
                     pickedPointNormal = pointNormal
             if self.doSlicing is False:
-                print("No skeleton loaded for slicing operations - performing flow calculations through face.")
+                #print("No skeleton loaded for slicing operations - performing flow calculations through face.")
                 self.BFS_planar_constraint(picked_point_id)
                 return
             axis = self.find_local_axis(picked_point_id)
-            print(f"Local axis at picked point: {axis}")
+            #print(f"Local axis at picked point: {axis}")
             # check if axis is approximately aligned with point normal
             # this indicates whether we are at the end of a branch i.e. at a face of the aorta
-            axis_normalized = axis / np.linalg.norm(axis)
-            point_normal_normalized = np.array(pickedPointNormal) / np.linalg.norm(pickedPointNormal)
-            alignment = np.abs(np.dot(axis_normalized, point_normal_normalized))
+            axis_normalised = axis / np.linalg.norm(axis)
+            print("Local Axis: ", axis)
+            point_normal_normalised = np.array(pickedPointNormal) / np.linalg.norm(pickedPointNormal)
+            alignment = np.abs(np.dot(axis_normalised, point_normal_normalised))
+            print(f"Alignment between local axis and point normal: {alignment}")
             if np.isclose(alignment, 1.0, atol=0.2):
-                print(f"Clicked near end face of branch - performing volume flow rate and average\\"
-                      f"pressure calculations across face.")
-                self.BFS_planar_constraint(picked_point_id)
+                #print(f"Clicked near end face of branch - performing volume flow rate and average\\"
+                #      f"pressure calculations across face.")
+                self.BFS_planar_constraint(picked_point_id, axis_normalised)
             else:
-                print(f"Clicked along branch - performing local slice visualisation.")
-                self.show_local_slice(np.array(self.objectSurface.GetPoint(picked_point_id)), axis)
+                #print(f"Clicked along branch - performing local slice visualisation.")
+                self.show_slice(np.array(self.objectSurface.GetPoint(picked_point_id)), axis)
         else:
             print("No cell picked")
             pass
@@ -632,27 +644,33 @@ class VTUViewer:
                         tangent = np.array(self.skeleton_with_cells.GetPoint(cell_point_ids.GetId(j))) - closest_point_coords
                         break  # only need one tangent point from one cell
                 tangents.append(tangent)
-        else:
-            # use 3 closest points to define tangents
-            print("Using 3 closest points to define tangents")
-            closest_point_ids = np.argsort(self.skeleton_to_pt_distances)[:3]
-            print("Closest skeleton point IDs: ", closest_point_ids)
-            tangent1 = self.skeleton_points[closest_point_ids[1]] - self.skeleton_points[closest_point_ids[0]]
-            tangent2 = self.skeleton_points[closest_point_ids[2]] - self.skeleton_points[closest_point_ids[0]]
-            if np.dot(tangent1, tangent2) > 0:
-                print("Both tangents in same direction - likely end of branch")
-                tangents.append(tangent1)  # only append one tangent
-            else:
-                tangents.append(tangent1)
-                tangents.append(tangent2)            
-        if len(tangents) < 2:
+                print(f"Tangent from cell {cell_id}: {tangent}")
+        # need only UNIQUE tangents - if dot product between two tangents is close to 1, they are likely the same direction and we only need one for defining the axis
+        unique_tangents = []
+        for i in range(len(tangents)):
+            is_unique = True
+            for j in range(i):
+                if np.dot(tangents[i], tangents[j]) / (np.linalg.norm(tangents[i]) * np.linalg.norm(tangents[j])) > 0.9:
+                    is_unique = False
+                    break
+            if is_unique:
+                unique_tangents.append(tangents[i])
+        if len(unique_tangents) < 2:  # i.e. less than 2 UNIQUE tangents
             # end of branch case - only one tangent available
-            skeleton_axis = tangents[0]
-        else:
-            skeleton_axis = tangents[0] - tangents[1]
+            skeleton_axis = unique_tangents[0]
+            if closest_point_id > 0:
+                if np.dot(skeleton_axis, self.skeleton_points[closest_point_id] - self.skeleton_points[closest_point_id-1]) < 0:
+                    skeleton_axis = -skeleton_axis
+        else:  # 2 unique tangents available
+            # print tangents array
+            print("Tangents array:", np.array(unique_tangents))
+            skeleton_axis = unique_tangents[0] - unique_tangents[1]
+            if closest_point_id < self.skeleton.GetNumberOfPoints() - 1:
+                if np.dot(skeleton_axis, self.skeleton_points[closest_point_id + 1] - self.skeleton_points[closest_point_id]) < 0:
+                    skeleton_axis = -skeleton_axis
         return skeleton_axis
 
-    def show_local_slice(self, clicked_pt_coords, skeleton_axis):
+    def show_slice(self, clicked_pt_coords, skeleton_axis):
         """
         Show a local slice of the object grid at the clicked position.
         """
@@ -661,36 +679,29 @@ class VTUViewer:
                                                      axis_vec=skeleton_axis)
         self.connectivity.Update()
         self.slice = self.connectivity.GetOutput()
+        #print(f"Number of points in slice: {self.slice.GetNumberOfPoints()}")
         self.compute_normals_arrays(self.slice)
-        self.compute_cell_area_array(self.slice)
+        self.state.area = np.round(self.compute_cell_area_array(self.slice),2)
         if self.doVelocityCalcs:
-            Q=self.calculate_flow_rate(self.velocityName, self.slice, None)
-            print(f"Volume Flow Rate Through Slice: {np.round(Q,2)}cm^3/s")
-        for array_name in self.array_names.keys():
-            # calculate average and total values on the slice for each array
-            if array_name == "vWSS[dyn/cm^2]":
-                continue  # skip WSS calculations on slice
-            avg = self.calculate_value(array_name, self.slice, "average", None)
-            total = self.calculate_value(array_name, self.slice, "total", None)
-            print(f"Slice - Average {array_name}: {np.round(avg,2)}, Total {array_name}: {np.round(total,2)}")
+            self.state.Q = np.round(self.calculate_flow_rate(self.velocityName, self.slice, None),2)
+            mean_vel = self.calculate_value(self.velocityName, self.slice, "average", None, None, vec=True)
+            self.state.flow_direction = -1 if np.dot(skeleton_axis, mean_vel) < 0 else 1
         if self.doPressureCalcs:
-            average_pressure = self.calculate_value(self.pressureName, self.slice, "average", None)
-            print(f"Average Pressure on Slice: {np.round(average_pressure,2)}Pa")       
+            self.state.average_pressure = np.round(self.calculate_value(self.pressureName, self.slice, "average", None),2)
         self.surfaceActor.SetVisibility(True)
         # Make the aorta semi-transparent so you can see the slice inside
         self.sliceActor.SetVisibility(True)
-        self.surfaceActor.GetProperty().SetOpacity(0.2)
+        self.surfaceMapper.SetScalarVisibility(False)  # turn off colouring by scalars for surface when slice is visible, to make it easier to see the slice colours
+        self.surfaceActor.GetProperty().SetOpacity(0.3)
         if self.state.selected_colour == "vWSS[dyn/cm^2]":
             self.state.selected_colour = "No Colouring"
             self.glyphActor.SetVisibility(False)
             self.state.flush()
-        #if self.array_names.get(self.state.selected_colour) == "Vector":
-        #    array_to_colour_by = f"{self.state.selected_colour}_{self.state.selected_component}"
-        #else:
-        #    array_to_colour_by = self.state.selected_colour
-        #print("Colouring slice by:", array_to_colour_by)
-        #self.set_colouring_by_dataset(array_to_colour_by, self.slice, self.sliceMapper)
-        #self.slice.GetPointData().SetActiveScalars(array_to_colour_by)
+        if self.array_names.get(self.state.selected_colour) == "Vector":
+            array_to_colour_by = f"{self.state.selected_colour}_{self.state.selected_component}"
+        else:
+            array_to_colour_by = self.state.selected_colour
+        self.set_colouring_by_dataset(array_to_colour_by, self.slice, self.sliceMapper, lut=self.sliceLut)
         self.controller.view_update()
     
     def create_local_slice(self, click_coords, skeleton_pt, axis_vec):
@@ -702,7 +713,7 @@ class VTUViewer:
         self.planeCutter.SetPlane(self.plane)
         self.connectivity.SetClosestPoint(click_coords)
 
-    def BFS_planar_constraint(self, seed_point_id):
+    def BFS_planar_constraint(self, seed_point_id, axis):
         """
         Search neighbouring cells from a seed point within a distance threshold.
         """
@@ -749,16 +760,18 @@ class VTUViewer:
                 if valid_cell is False:
                     visitedCells.remove(cell_id) 
 
-        for array_name in self.array_names.keys():
-            # calculate average and total values on the surface for each array
-            avg = self.calculate_value(array_name, self.objectSurface, "average", visitedPoints)
-            total = self.calculate_value(array_name, self.objectSurface, "total", visitedPoints)
-            print(f"Surface - Average {array_name}: {np.round(avg,2)}, Total {array_name}: {np.round(total,2)}") 
         if self.doPressureCalcs:
-            print(f"Average Pressure: {np.round(self.calculate_value(self.pressureName, self.objectSurface, 'average', visitedPoints),2)}Pa")
+            avg_p = self.calculate_value(self.pressureName, self.objectSurface, "average", point_ids=visitedPoints)
+            self.state.average_pressure = np.round(avg_p,2)
         if self.doVelocityCalcs:
-            print(f"Volume Flow Rate Through Face: {np.round(self.calculate_flow_rate(self.velocityName, self.objectSurface, visitedCells),2)}cm^3/s")
-
+            Q, norm = self.calculate_flow_rate(self.velocityName, self.objectSurface, visitedCells, return_normal=True)
+            if np.dot(norm, axis) < 0:
+                Q = -Q
+            mean_vel = self.calculate_value(self.velocityName, self.objectSurface, "average", False, point_ids=visitedPoints, vec=True)
+            self.state.flow_direction = -1 if np.dot(axis, mean_vel) < 0 else 1
+            self.state.Q = np.round(Q,2)
+        total_area = np.sum([self.surface_cell_areas_np[cell_id] for cell_id in visitedCells])
+        self.state.area = np.round(total_area,2)
         self.shade_surface_points(visitedPoints)
     
     def calculate_average_cell_side_length(self, cell_id):
@@ -780,17 +793,21 @@ class VTUViewer:
             total_length += np.linalg.norm(p1 - p2)
         return total_length / num_edges
 
-    def calculate_value(self, array_name, dataset, calc_type, point_ids=None):
+    def calculate_value(self, array_name, dataset, calc_type, cell_data=False, point_ids=None, vec=False):
         """
         Compute average or total value over a set of points.
         calc_type: "average" or "total"
         """
-        point_data = dataset.GetPointData()
-        data_vtk_array = point_data.GetArray(array_name)
+        if cell_data:
+            data = dataset.GetCellData()
+        else:
+            data = dataset.GetPointData()
+        data_vtk_array = data.GetArray(array_name)
         if not data_vtk_array:
-            raise ValueError(f"Array {array_name} not found in point data")
+            raise ValueError(f"Array {array_name} not found in data")
         if calc_type not in ["average", "total"]:
             raise ValueError("Invalid calc_type. Use 'average' or 'total'.")
+
         data_np_array = numpy_support.vtk_to_numpy(data_vtk_array)  # convert to numpy array for easier indexing
         if point_ids is not None:
             target_vals = data_np_array[list(point_ids)]  # extract values at specified point IDs
@@ -800,9 +817,12 @@ class VTUViewer:
         if target_vals.size == 0:
             return 0.0
         # compute average or total using numpy
-        return np.mean(target_vals) if calc_type == "average" else np.sum(target_vals)
+        if vec is False:
+            return np.mean(target_vals) if calc_type == "average" else np.sum(target_vals)
+        else:
+            return np.mean(target_vals, axis=0) if calc_type == "average" else np.sum(target_vals, axis=0)
     
-    def calculate_flow_rate(self, array_name, dataset, cell_ids=None):
+    def calculate_flow_rate(self, array_name, dataset, cell_ids=None, return_normal=False):
         """
         Compute flow rate through a set of cells along the seed normal direction.
         """
@@ -815,7 +835,7 @@ class VTUViewer:
         if cell_ids is None:
             # use all cell ids if none specified
             cell_ids = range(dataset.GetNumberOfCells())
-        print("Calculating flow rate through", len(cell_ids), "cells")
+        #print("Calculating flow rate through", len(cell_ids), "cells")
         for cell_id in cell_ids:
             # get cell normal - cannot use self.surface_cell_norms_np as this is for the entire surface
             if dataset == self.objectSurface:
@@ -829,6 +849,8 @@ class VTUViewer:
             cell_pt_ids_np = np.array([cell_point_ids.GetId(i) for i in range(cell_point_ids.GetNumberOfIds())])
             v_dot_n = np.sum(vel_np_array[cell_pt_ids_np] * normal, axis=1) 
             Q += np.mean(v_dot_n) * area
+        if return_normal:
+            return Q, normal
         return Q
 
     def shade_surface_points(self, point_ids):
@@ -900,6 +922,7 @@ class VTUViewer:
             self.surface_cell_areas_np = np_cell_areas_arr
         else:
             self.slice_cell_areas_np = np_cell_areas_arr
+        return np.sum(np_cell_areas_arr)
 
     def compute_normals_arrays(self, dataset=None):
         """
@@ -910,6 +933,7 @@ class VTUViewer:
         normalsFilter.ComputePointNormalsOn()
         normalsFilter.ComputeCellNormalsOn()
         normalsFilter.SplittingOff()  # prevent normal splitting at sharp edges - keeps number of points consistent
+        normalsFilter.ConsistencyOn() 
         normalsFilter.Update()
         np_pt_norms_arr = numpy_support.vtk_to_numpy(normalsFilter.GetOutput().GetPointData().GetNormals())
         np_cell_norms_arr = numpy_support.vtk_to_numpy(normalsFilter.GetOutput().GetCellData().GetNormals())
@@ -959,22 +983,26 @@ class VTUViewer:
         """
         Setup glyphs to visualise wall shear stress vectors.
         """
+        
         arrow_source = vtk.vtkArrowSource()
-        masker = vtk.vtkMaskPoints()  # for filtering points selectively
-        masker.SetInputData(self.objectSurface)
-        masker.SetOnRatio(100) # show every 100th point
-        masker.RandomModeOn()
-        masker.SingleVertexPerCellOn() # prevent multiple arrows per cell
-
+        sampler = vtk.vtkPoissonDiskSampler()
+        sampler.SetInputData(self.objectSurface)
+        sampler.SetRadius(0.02 * self.chic_lengthscale_grid)  # sample points at a radius of 5% of the grid length scale
         self.glyph.SetSourceConnection(arrow_source.GetOutputPort())
-        self.glyph.SetInputConnection(masker.GetOutputPort())
+        self.glyph.SetInputConnection(sampler.GetOutputPort())
         self.glyph.SetVectorModeToUseVector()  # use vector data for orientation and scaling
         self.glyph.SetInputArrayToProcess(1, 0, 0, vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS, "vWSS[dyn/cm^2]")
         self.glyph.SetScaleModeToScaleByVector()  # scaling by tau magnitude
         self.glyph.OrientOn()  # make sure arrows are oriented along vector direction
-
+        wss_array = self.objectSurface.GetPointData().GetArray("vWSS[dyn/cm^2]")
+        if wss_array:
+            max_wss = wss_array.GetRange()[1]  # get maximum WSS magnitude
+            if max_wss > 0:
+                # make arrow lengths invariant to WSS magnitude across datasets
+                desired_max_arrow_length = 0.1 * self.chic_lengthscale_grid  # max arrow length is 20% of the grid length scale
+                scale_factor = desired_max_arrow_length / max_wss
+                self.glyph.SetScaleFactor(scale_factor)
         self.glyphMapper.SetInputConnection(self.glyph.GetOutputPort())
-
         self.glyphActor.SetMapper(self.glyphMapper)
         self.glyphMapper.ScalarVisibilityOff()  # disconnect from scalar colouring
         self.glyphActor.GetProperty().SetColor(1.0, 1.0, 1.0)
@@ -995,6 +1023,15 @@ class VTUViewer:
                 self.doPressureCalcs = True
             self.setup_arrays_in_dataset(self.objectGrid)
             self.get_grid_surface()
+            dataset_bounds = self.objectSurface.GetBounds()
+            dx = dataset_bounds[1] - dataset_bounds[0]
+            dy = dataset_bounds[3] - dataset_bounds[2]
+            dz = dataset_bounds[5] - dataset_bounds[4]
+            self.chic_lengthscale_grid = np.mean([dx, dy, dz])
+            # change custom sphere radii to be 0.5% of the grid length scale
+            if self.doProbing:  # i.e. skeleton loaded
+                for source in self.sphereSources:
+                    source.skeletonSphereSource.SetRadius(0.01 * self.chic_lengthscale_grid)
             self.compute_normals_arrays(self.objectSurface)
             self.compute_cell_area_array(self.objectSurface)
             if self.velocityName:
@@ -1026,11 +1063,7 @@ class VTUViewer:
             self.surfaceCellLocator = vtk.vtkStaticCellLocator()
             print("Building cell locator for object surface...")
             self.surfaceCellLocator.SetDataSet(self.objectSurface)
-            self.surfaceCellLocator.BuildLocator()
-
-            if self.doProbing:
-                print("Setting up probing along skeleton...")
-                self.probe_along_skeleton()
+            self.surfaceCellLocator.BuildLocator()         
 
         if self.doSlicing is True:
             print("Adding slice actor...")
@@ -1097,9 +1130,6 @@ class VTUViewer:
             self.scalar_bar.SetVisibility(0)
             return
         self.scalar_bar.SetVisibility(1)
-        self.scalar_bar.SetLookupTable(self.lut)
-        #self.surfaceMapper.ScalarVisibilityOff()
-        self.surfaceMapper.ScalarVisibilityOn()
     
     def setup_point_cloud_layers(self):
         """
@@ -1168,48 +1198,47 @@ class VTUViewer:
             dist = 0.1 + 0.9 * importance
             actor.GetProperty().SetColor(dist, dist, dist)
             actor.GetProperty().SetOpacity(dist)
-            actor.GetProperty().SetPointSize(dist)
+            actor.GetProperty().SetPointSize(1.0)
 
     def set_image_level(self, level):
         """
         Shows all point cloud layers up to level.
         """
         sorted_keys = sorted(self.pointCloudLayers.keys(), reverse=True)
+        # print the image level as a percentage of the scalar range
+        print(f"Setting image level to {level*5}% of scalar range")
         for i, key in enumerate(sorted_keys):
             actor = self.pointCloudLayers[key]
             actor.SetVisibility(i < level)
+    
+    def clear_sphere_sources(self):
+        for sphere_source in self.sphereSources:
+            sphere_source.actor.SetVisibility(0)
+        self.probe_ids = np.array([], dtype=int)
+        self.plot_probed_data()
+        self.overlayActor.SetVisibility(0)
     
     def clear_slice_and_selection(self):
         """
         Clear any existing slice and selection colouring, resetting to default view.
         """
-        print("Clearing slice and selection colouring.")
-        # reset opacity and hide slice
-        self.sliceActor.SetVisibility(False)
-        self.surfaceActor.GetProperty().SetOpacity(1.0)
-        self.set_colouring_by_dataset("No Colouring", self.objectSurface, self.surfaceMapper)
+        if self.sliceActor.GetVisibility() == 1:
+            self.sliceActor.SetVisibility(False)
+            self.surfaceActor.GetProperty().SetOpacity(1.0)
+            self.set_colouring_by_dataset("No Colouring", self.objectSurface, self.surfaceMapper)
+        if self.doProbing:
+            self.clear_sphere_sources()
+        self.surfaceMapper.SetScalarVisibility(False)
+        self.state.Q = None
+        self.state.mean_velocity = None
+        self.state.average_pressure = None
+        self.state.area = None
+        self.state.p1 = None
+        self.state.p2 = None
+        self.state.p_drop = None
+        if self.renderingPointCloud:
+            self.state.image_level = 0
         self.controller.view_update()
-    
-    def clear_plot(self):
-        """
-        Clear any existing plot data.
-        """
-        print("Clearing plot data.")
-        self.probe_ids = np.array([], dtype=int)
-        for sphere_source in self.sphereSources:
-            sphere_source.actor.SetVisibility(0)
-            self.renderer.RemoveActor(sphere_source.actor)
-        self.sphereSources = []
-        with self.fig.batch_update():
-            self.fig.data[0].x = []
-            self.fig.data[0].y = []
-        self.state.plot = self.fig.to_dict()
-        self.state.flush()
-        self.controller.view_update()
-    
-    def on_skeleton_click(self, cell_id):
-        """Handler for Skeleton Click"""
-        print(f"Clicked on skeleton cell ID: {cell_id}")
 
     def on_click(self, event):
         """Handler for Click (Button 2)"""
@@ -1233,27 +1262,43 @@ class VTUViewer:
             cellId = vtk.mutable(0)
             hit = self.skeletonCellLocator.IntersectWithLine(p1, p2, 0.1, t, x, pcoords, subId, cellId)
             if hit:
-                print(f"Clicked on skeleton cell ID: {cellId}")
+                # FIND CLOSEST POINT ON SKELETON_WITH_CELLS TO CLICKED POINT AND STORE THIS POINT ID FOR PROBING
+                point_id = self.pointLocator.FindClosestPoint(x)
+                if len(self.probe_ids) < 2:
+                    if len(self.probe_ids) == 0:
+                        self.state.p1 = np.round(self.pressure_array[int(point_id)], 2)
+                    elif len(self.probe_ids) == 1:
+                        self.state.p2 = np.round(self.pressure_array[int(point_id)], 2)
+                    self.probe_ids = np.append(self.probe_ids, int(point_id))  # store first point id of cell for probing
+                    
+                else:
+                    self.probe_ids[-1] = int(point_id)
+                    self.state.p2 = np.round(self.pressure_array[int(point_id)], 2)
+                print("Length of probe_ids array:", len(self.probe_ids))
+                sphere_source = self.sphereSources[len(self.probe_ids)-1]
+                sphere_source.actor.SetPosition(np.array(self.skeleton.GetPoint(point_id)))
+                sphere_source.actor.SetVisibility(1)
+                # if len(probe_ids) == 2, determine which of the cells contains both point ids and store this cell id for probing
+                if len(self.probe_ids) == 2:
+                    found_cell = False
+                    for i, cell_point_ids in enumerate(self.skeleton_cell_point_ids):
+                        if all(pid in cell_point_ids for pid in self.probe_ids):
+                            print(f"Found skeleton cell containing probe points: {i}")
+                            cellId = i
+                            found_cell = True
+                            break
+                    if not found_cell:
+                        print("No skeleton cell contains both probe points.")
+                        self.probe_ids = self.probe_ids[1:]
+                        self.sphereSources[0].actor.SetPosition(self.sphereSources[1].actor.GetPosition())
+                        self.state.p1 = np.round(self.pressure_array[self.probe_ids[0]], 2)
+                        self.state.p2 = None
+                        self.sphereSources[1].actor.SetVisibility(0)
+                changed = True
+                if cellId == self.current_picked_skeleton_line_id:
+                    changed = False
                 self.current_picked_skeleton_line_id = cellId
-                self.plot_probed_data()
-                #cell = self.skeleton.GetCell(cellId)
-                #cell_points = cell.GetPoints()
-                ## find average of cell points for sphere position
-                #num_cell_points = cell_points.GetNumberOfPoints()
-                #avg_point = np.array([0.0, 0.0, 0.0])
-                #for i in range(num_cell_points):
-                #    pt = cell_points.GetPoint(i)
-                #    avg_point += np.array(pt)
-                #if len(self.probe_ids) < 2:
-                #    self.probe_ids = np.append(self.probe_ids, int(cell.GetPointId(0)))  # store first point id of cell for probing
-                #    self.sphereSources.append(SphereSourceCustom())
-                #else:
-                #    self.probe_ids[-1] = int(cell.GetPointId(0))
-                #self.plot_probed_data()
-                #sphere_source = self.sphereSources[-1]
-                #sphere_source.actor.SetPosition(avg_point/num_cell_points)
-                #sphere_source.actor.SetVisibility(1)
-                #self.renderer.AddActor(sphere_source.actor)
+                self.plot_probed_data(changed=changed)
                 self.controller.view_update()
         else:
             return
@@ -1331,22 +1376,34 @@ def main():
     state.representation_options = ["Surface", "Wireframe", "Points"]  # Surface, Wireframe, Points
     state.representation = "Surface"  # default to Surface
     state.animation = False
+    state.animation_mode = False
     state.show_streamlines = True
     state.show_plot = False
-    state.vWSS_glyph_scale = 0.005
+    state.show_glyphs = False
     state.picking_modes = ["click"]
     state.do_picking = False
     state.show_plot = False
     state.fig = viewer.fig.to_dict()
+    state.Q = None
+    state.average_pressure = None
+    state.area = None
+    state.mean_velocity = None
+    state.p1 = None
+    state.p2 = None
+    state.p_drop = None
+    state.drawer_open = False
+    state.status = "Ready"
+    state.flow_direction = None
+
     if viewer.renderingPointCloud:
         state.image_level = len(viewer.pointCloudLayers) // 2
 
     if viewer.animating:
         # Speed settings to perform linear mapping
-        MIN_TS = 0.01   # fastest
-        MAX_TS = 0.31   # slowest
+        MIN_TS = 0.05   # fastest
+        MAX_TS = 0.3   # slowest
         state.max_speed = 0.3  # max speed limit  # NOTE: DISTANCE BETWEEN MAX AND MIN SPEED SHOULD BE MAX_TS - MIN_TS
-        state.min_speed = 0.0  # min speed limit
+        state.min_speed = 0.05  # min speed limit
         state.speed_step = 0.01  # speed adjustment step
         state.speed = state.max_speed - viewer.update_ts  # inverse mapping
 
@@ -1355,10 +1412,6 @@ def main():
     
     @state.change("selected_colour")
     def update_colour(selected_colour, **kwargs):
-        if viewer.glyphs_rendering is True and selected_colour == "vWSS[dyn/cm^2]":
-            viewer.glyphActor.SetVisibility(1)
-        else:
-            viewer.glyphActor.SetVisibility(0)
         if viewer.array_names.get(state.selected_colour) == "Vector":
             array_to_colour_by = f"{state.selected_colour}_{state.selected_component}"
             state.component_options = ["x", "y", "z", "mag"]
@@ -1367,10 +1420,17 @@ def main():
             state.component_options = ["mag"]
             state.selected_component = "mag"
         state.flush()
-        #viewer.plot_probed_data()
-        #if viewer.sliceActor.GetVisibility() == 1 and selected_colour != "vWSS[dyn/cm^2]":
-        #    viewer.set_colouring_by_dataset(array_to_colour_by, viewer.slice, viewer.sliceMapper)
-        viewer.set_colouring_by_dataset(array_to_colour_by, viewer.objectSurface, viewer.surfaceMapper)
+        if viewer.sliceActor.GetVisibility() == 1 and state.selected_colour != "vWSS[dyn/cm^2]":
+            viewer.set_colouring_by_dataset(array_to_colour_by, viewer.slice, viewer.sliceMapper, lut=viewer.sliceLut)
+        else:
+            if state.animation_mode:
+                if state.selected_colour == "vWSS[dyn/cm^2]":
+                    state.selected_colour = "No Colouring"
+                    return
+                surface = viewer.cached_contours[viewer.timestep - 1]
+            else:
+                surface = viewer.objectSurface
+            viewer.set_colouring_by_dataset(array_to_colour_by, surface, viewer.surfaceMapper)
         viewer.update_scalar_bar()
         controller.view_update()
 
@@ -1381,10 +1441,17 @@ def main():
             array_to_colour_by = f"{state.selected_colour}_{selected_component}"
         else:
             array_to_colour_by = state.selected_colour        
-        #if viewer.sliceActor.GetVisibility() == 1 and state.selected_colour != "vWSS[dyn/cm^2]":
-        #    viewer.set_colouring_by_dataset(array_to_colour_by, viewer.slice, viewer.sliceMapper)
-        #viewer.plot_probed_data()
-        viewer.set_colouring_by_dataset(array_to_colour_by, viewer.objectSurface, viewer.surfaceMapper)
+        if viewer.sliceActor.GetVisibility() == 1 and state.selected_colour != "vWSS[dyn/cm^2]":
+            viewer.set_colouring_by_dataset(array_to_colour_by, viewer.slice, viewer.sliceMapper, lut=viewer.sliceLut)
+        else:
+            if state.animation_mode:
+                if state.selected_colour == "vWSS[dyn/cm^2]":
+                    state.selected_colour = "No Colouring"
+                    return
+                surface = viewer.cached_contours[viewer.timestep - 1]
+            else:
+                surface = viewer.objectSurface
+            viewer.set_colouring_by_dataset(array_to_colour_by, surface, viewer.surfaceMapper)
         viewer.update_scalar_bar()
         controller.view_update()  
 
@@ -1400,13 +1467,48 @@ def main():
             if state.animation is False:
                 controller.view_update()
 
+    @state.change("animation_mode", debounce=250)
+    def toggle_animation_mode(animation_mode, **kwargs):
+        """Called by a button to toggle animation mode, which does not automatically start animation.
+            When enabled, it disables the picking and plotting buttons and enables the animation "Live Update" button.
+        """
+        # disable picking and plotting options when animation mode is enabled
+        if animation_mode:
+            state.do_picking = False
+            state.show_plot = False
+            state.show_streamlines = False
+            state.show_glyphs = False
+            state.status = "Animating"
+        # if not animation_mode, switch the self.surfaceMapper to the static surface mapper to show the original surface instead of the animation contours
+        if not animation_mode:
+            state.animation = False
+            if not (state.do_picking or state.show_plot):
+                state.status = "Ready"
+            # run the "clear" functions to reset the view to the original surface and clear any existing slices, selections, or plot overlays
+            viewer.surfaceMapper.SetInputData(viewer.objectSurface)
+        else:
+            viewer.surfaceMapper.SetInputData(viewer.cached_contours[viewer.timestep - 1])
+            current_color_array = state.selected_colour
+            if viewer.array_names.get(current_color_array) == "Vector":
+                current_color_array = f"{current_color_array}_{state.selected_component}"
+                
+            if current_color_array in viewer.colour_ranges:
+                scalar_min = viewer.colour_ranges[current_color_array][0]
+                scalar_max = viewer.colour_ranges[current_color_array][1]
+                viewer.surfaceMapper.SetScalarRange(scalar_min, scalar_max)
+        
+        viewer.clear_slice_and_selection()
+            
+        state.flush()  # ensure picking and plotting checkboxes update in GUI
+        controller.view_update()
+    
     @state.change("animation", debounce=250)
     def toggle_animation(animation, **kwargs):
         """Called by a button to start/stop"""
         if state.animation is True:
             # Start the background task without blocking Python
             asyncio.create_task(viewer.animate())
-    
+                
     @state.change("speed")
     def on_speed_change(speed, **kwargs):
         normalised_ts = (speed - state.min_speed) / (state.max_speed - state.min_speed)  # map speed to 0-1
@@ -1435,13 +1537,15 @@ def main():
                 viewer.streamlineActor.SetVisibility(0)
             controller.view_update()
 
-    @state.change("vWSS_glyph_scale", debounce=250)
-    def update_glyph_scale(vWSS_glyph_scale, **kwargs):
-        if viewer.glyphs_rendering is False:
-            return
-        viewer.glyph.SetScaleFactor(vWSS_glyph_scale)
-        viewer.glyphMapper.Update()
-        controller.view_update()
+    @state.change("show_glyphs", debounce=250)
+    def toggle_glyphs(show_glyphs, **kwargs):
+        if viewer.glyphs_rendering is True:
+            if show_glyphs:
+                viewer.glyphActor.SetVisibility(1)
+            else:
+                viewer.glyphActor.SetVisibility(0)
+            controller.view_update()
+        print(viewer.glyphActor.GetVisibility())
 
     @state.change("show_plot")
     def toggle_plot(show_plot, **kwargs):
@@ -1452,15 +1556,17 @@ def main():
         viewer.skeletonActor.SetVisibility(1 if show_plot else 0)
         if show_plot:
             state.do_picking = False
+            state.show_glyphs = False
+            state.show_streamlines = False
+            state.status = "Plotting"
             state.flush()  # ensure picking checkbox updates in GUI
             viewer.scalar_bar.SetVisibility(0)
-            #if viewer.doProbing:
-            #    for sphere in viewer.sphereSources:
-            #        sphere.actor.SetVisibility(1)
-        #else:
-        #    if viewer.doProbing:
-        #        for sphere in viewer.sphereSources:
-        #            sphere.actor.SetVisibility(0)
+        else:
+            if viewer.overlayActor:
+                viewer.overlayActor.SetVisibility(0)  # hide overlay when plot is hidden
+            if not (state.do_picking or state.animation_mode):
+                state.status = "Ready"
+        viewer.clear_slice_and_selection()  # sphere source also cleared in here
         controller.view_update()
     
     @state.change("do_picking")
@@ -1470,144 +1576,232 @@ def main():
             if state.selected_colour != "No Colouring":
                 viewer.scalar_bar.SetVisibility(1)
             state.show_plot = False
+            state.show_glyphs = False
+            state.show_streamlines = False
+            state.status = "Picking"
             state.flush()  # ensure plot checkbox updates in GUI
+        else:
+            if not (state.show_plot or state.animation_mode):
+                state.status = "Ready"
+            viewer.clear_slice_and_selection()
         controller.view_update()
 
     with SinglePageLayout(server) as layout:
         # Toolbar
+        layout.icon.children.clear() # This deletes the left-most icon
+        with layout.icon:
+            v3.VAppBarNavIcon(click="drawer_open = !drawer_open", color="grey-darken-2")
+
         with layout.toolbar:
-            v3.VSpacer()
-            v3.VSelect(
-                label="Representation",
-                v_model="representation",
-                items=("representation_options",), # Pass the list directly
-                dense=True,
-            )
-        with layout.toolbar:
-            v3.VSpacer()
-            v3.VSelect(
-                label="Colouring",
-                v_model="selected_colour",
-                items=("colour_options",), # Pass the list directly
-                dense=True,
-            )
-        with layout.toolbar:
-            v3.VSpacer()
-            v3.VSelect(
-                label="Component",
-                v_model="selected_component",
-                items=("component_options",), # Pass the list directly
-                dense=True,
-            )
-        if viewer.renderingPointCloud:  # only show if image data is available
-            with layout.toolbar:
-                v3.VSpacer()
-                v3.VSlider(
-                    v_model="image_level",
-                    min=0,
-                    max=len(viewer.pointCloudLayers),
-                    step=1,
-                    hide_details=True,
-                    dense=True,
-                    style="max-width: 300px",
-                    label="Detail Level"
-                )
-        if viewer.animating:
-            with layout.toolbar:
-                v3.VSpacer()
-                v3.VCheckbox(
-                    v_model="animation",
-                    label="Live Update",
-                    hide_details=True,
-                    dense=True,
-                )
-                v3.VBtn("-", click=speed_down),
-                v3.VSlider(
-                    v_model="speed",
-                    min=state.min_speed,
-                    max=state.max_speed,
-                    step=state.speed_step,
-                    hide_details=True,
-                    style="width: 200px",
-                    label="Speed"
-                ),
-                v3.VBtn("+", click=speed_up),
-        if viewer.renderingStreamlines is True:
-            with layout.toolbar:
-                v3.VSpacer()
-                v3.VCheckbox(
-                    v_model="show_streamlines",
-                    label="Show Streamlines",
-                    hide_details=True,
-                    dense=True,
-                )
-        if viewer.velocityName:
-            with layout.toolbar:
-                v3.VSpacer()
-                v3.VSlider(
-                    v_model="vWSS_glyph_scale",
-                    min=0.0,
-                    max=0.2,
-                    step=0.005,
-                    hide_details=True,
-                    dense=True,
-                    style="max-width: 300px",
-                    label="Glyph Scale"
-                )
-        with layout.toolbar:
-            v3.VSpacer()
-            v3.VCheckbox(
-                v_model="do_picking",
-                label="Enable Picking",
-                hide_details=True,
-                dense=True,
-            )
-        with layout.toolbar:
-            v3.VSpacer()
-            v3.VBtn(
-                "Clear",
-                dense=True,
-                click=viewer.clear_slice_and_selection,
-            )
-        with layout.toolbar:
-            v3.VSpacer()
-            v3.VCheckbox(
-                v_model="show_plot",
-                label="Toggle plot",
-                hide_details=True,
-                dense=True,
-            )
-        # VTK view content
+            layout.toolbar.elevation = 2
+            # Using a single Row ensures perfect vertical centering for all items
+            with v3.VRow(align="center", dense=True, classes="px-2 w-100"):
+                with v3.VCol(cols="auto"):
+                    v3.VSelect(
+                        label="Representation", v_model="representation", items=("representation_options",),
+                        density="compact", hide_details=True, variant="outlined", style="min-width: 120px;"
+                    )
+                with v3.VCol(cols="auto"):
+                    v3.VSelect(
+                        label="Colouring", v_model="selected_colour", items=("colour_options",),
+                        density="compact", hide_details=True, variant="outlined", style="min-width: 160px;"
+                    )
+                with v3.VCol(cols="auto"):
+                    v3.VSelect(
+                        label="Component", v_model="selected_component", items=("component_options",),
+                        density="compact", hide_details=True, variant="outlined", style="min-width: 80px;"
+                    )
+
+                v3.VDivider(vertical=True, classes="mx-3") # Neat visual separator
+
+                with v3.VCol(cols="auto"):
+                    v3.VCheckbox(
+                        label="Slice", v_model=("do_picking", False),
+                        hide_details=True, density="compact", disabled=("animation_mode",), color="primary"
+                    )
+                if viewer.doProbing:
+                    with v3.VCol(cols="auto"):
+                        v3.VCheckbox(
+                            label="Plot", v_model=("show_plot", False),
+                            hide_details=True, density="compact", disabled=("animation_mode",), color="primary"
+                        )
+
+                # The invisible spring that pushes everything below it to the right
+                v3.VSpacer() 
+                with v3.VCol(cols="auto"):
+                    v3.VBtn(
+                        "Clear", click=viewer.clear_slice_and_selection,
+                        variant="tonal", color="error", density="compact" 
+                    )
+        
         with layout.content:
-            with v3.VContainer(fluid=True, classes="pa-0 fill-height", style="position: relative;"):
+            with v3.VNavigationDrawer(
+                v_model=("drawer_open", False), 
+                temporary=True, # necwessary
+                location="left",
+                elevation=4
+            ):
+                # Sidebar Header
+                with v3.VToolbar(density="compact", color="grey-lighten-4", elevation=0):
+                    v3.VToolbarTitle("Settings", classes="text-subtitle-2 font-weight-bold text-grey-darken-2")
+                    v3.VSpacer()
+                    v3.VBtn("X", density="compact", variant="text", click="drawer_open = false")
+
+                # Sidebar Content 
+                with v3.VContainer(classes="pa-4"):
+
+                    html.Div("Wall Shear Stress", classes="text-overline text-grey-darken-1 mb-2", style="line-height: 1;")
+                    with html.Div(classes="d-flex align-center justify-space-between"):
+                        html.Span("Show WSS Glyphs", classes="text-subtitle-2 text-grey-darken-2")
+                        v3.VCheckbox(
+                            v_model="show_glyphs",
+                            hide_details=True, density="compact", disabled=("animation_mode || do_picking || show_plot",), color="primary",
+                            classes="flex-grow-0"
+                        )
+
+                    v3.VDivider(classes="my-5")
+
+                    if viewer.renderingStreamlines is True:
+                        html.Div("STREAMLINES", classes="text-overline text-grey-darken-1 mb-2", style="line-height: 1;")
+                        with html.Div(classes="d-flex align-center justify-space-between"):
+                            html.Span("Show Streamlines", classes="text-subtitle-2 text-grey-darken-2")
+                            v3.VCheckbox(
+                                v_model="show_streamlines", 
+                                hide_details=True, density="compact", disabled=("animation_mode",), color="primary",
+                                classes="flex-grow-0"
+                            )
+                        
+                        v3.VDivider(classes="my-5")
+
+                    if viewer.renderingPointCloud:
+                        html.Div("IMAGE RENDER", classes="text-overline text-grey-darken-1 mb-2", style="line-height: 1;")
+                        with html.Div(classes="d-flex flex-column"):
+                            html.Span("Detail Level", classes="text-subtitle-2 text-grey-darken-2 mb-1")
+                            v3.VSlider(
+                                v_model="image_level", 
+                                min=0, max=len(viewer.pointCloudLayers), step=1,
+                                hide_details=True, density="compact", color="primary",
+                                classes="w-100"
+                            )
+                        
+                        v3.VDivider(classes="my-5")
+
+                    html.Div("SLICING & FACE SELECTION", classes="text-overline text-grey-darken-1 mb-2", style="line-height: 1;")
+                    with html.Div(classes="d-flex align-center justify-space-between"):
+                        html.Span("Enable Picking", classes="text-subtitle-2 text-grey-darken-2")
+                        v3.VCheckbox(
+                            v_model=("do_picking", False),
+                            hide_details=True, density="compact", disabled=("animation_mode",), color="primary",
+                            classes="flex-grow-0"
+                        )
+                    
+                    v3.VDivider(classes="my-5")
+
+                    if viewer.doProbing:
+                        html.Div("PRESSURE PLOTTING", classes="text-overline text-grey-darken-1 mb-2", style="line-height: 1;")
+                        with html.Div(classes="d-flex align-center justify-space-between"):
+                            html.Span("Enable Plotting", classes="text-subtitle-2 text-grey-darken-2")
+                            v3.VCheckbox(
+                                v_model=("show_plot", False),
+                                hide_details=True, density="compact", disabled=("animation_mode",), color="primary",
+                                classes="flex-grow-0"
+                            )
+                        v3.VDivider(classes="my-5")
+
+                    if viewer.animating:
+                        html.Div("MOVING BOUNDARY ANIMATION", classes="text-overline text-grey-darken-1 mb-2 mt-4", style="line-height: 1;")
+
+                        # --- Animation Mode Toggle ---
+                        with html.Div(classes="d-flex align-center justify-space-between mb-1"):
+                            html.Span("Animation Mode", classes="text-subtitle-2 text-grey-darken-2")
+                            v3.VSwitch(
+                                v_model=("animation_mode", False),
+                                hide_details=True, density="compact", color="primary",
+                                classes="flex-grow-0" # Keeps the switch tightly wrapped on the right
+                            )
+
+                        # --- Live Update Checkbox ---
+                        with html.Div(classes="d-flex align-center justify-space-between mb-2"):
+                            html.Span("Live Update", classes="text-subtitle-2 text-grey-darken-2")
+                            v3.VCheckbox(
+                                v_model=("animation", False),
+                                hide_details=True, density="compact", disabled=("!animation_mode",), color="primary",
+                                classes="flex-grow-0"
+                            )
+
+                        # --- Speed Slider ---
+                        with html.Div(classes="d-flex align-center mt-2"):
+                            html.Span("Speed", classes="text-subtitle-2 text-grey-darken-2 mr-4")
+                            v3.VSlider(
+                                v_model="speed", min=state.min_speed, max=state.max_speed, step=state.speed_step,
+                                hide_details=True, density="compact", disabled=("!animation_mode",), color="primary",
+                                classes="flex-grow-1" # Automatically stretches to fill the rest of the sidebar width
+                            )
+
+            with v3.VContainer(fluid=True, classes="pa-0 fill-height", style="position: relative; overflow: hidden;"):
                 viewer.render()
                 if viewer.doProbing:
                     with v3.VCard(
-                        style="""
-                            position: fixed;
-                            bottom: 20px;
-                            right: 20px;
-                            width: 25vw;
-                            height: 40vh;
-                            z-index: 1000;
-                        """,
-                        elevation=10,
+                        elevation=6,
+                        rounded="lg",
                         v_show="show_plot",
+                        style="position: absolute; bottom: 30px; left: 20px; width: 40vw; height: 60vh; z-index: 1000; display: flex; flex-direction: column; overflow: hidden;"
                     ):
-                        plotly.Figure(figure=viewer.fig, style="width: 100%; height: 100%;", state_variable_name="plot")
-                with v3.VCard(
-                    style="""
-                        position: fixed;
-                        bottom: 20px;
-                        left: 20px;
-                        width: 25vw;
-                        height: 40vh;
-                        z-index: 1000;
-                    """,
-                    elevation=10,
-                    v_show="show_plot",
-                ):
-                    plotly.Figure(figure=viewer.scatter3D.fig, style="width: 100%; height: 100%;")
+                        with v3.VToolbar(density="compact", color="grey-lighten-4", elevation=0):
+                            v3.VToolbarTitle("Probing Data", classes="text-subtitle-2 font-weight-bold text-grey-darken-2")
+                            v3.VSpacer()
+                            v3.VBtn("X", density="compact", variant="text", color="grey-darken-1", click="show_plot = false")
+                        
+                        with html.Div(classes="flex-grow-1", style="position: relative;"):                            
+                            plotly.Figure(
+                                figure=viewer.fig, 
+                                style="width: 100%; height: 100%;", 
+                                state_variable_name="plot"
+                            )
+
+        with layout.footer:
+            with v3.VContainer(fluid=True, classes="bg-grey-lighten-4 pa-2", style="width: 100%;"):
+                with v3.VRow(dense=True, justify="center", v_if="!show_plot"):
+                    with v3.VCol():
+                        with v3.VCard(variant="outlined", classes="pa-2 text-center bg-white"):
+                            html.Div("Volumetric Flow Rate", classes="text-overline text-grey-darken-1", style="line-height: 1;")
+                            html.Div("{{ Q }} cm³/s", classes=(
+                                "['text-h6', 'font-weight-bold', { "
+                                "'text-error': flow_direction === -1, "
+                                "'text-success': flow_direction === 1, "
+                                "'text-info': flow_direction === null "
+                                "}]",
+                            ))
+                    with v3.VCol():
+                        with v3.VCard(variant="outlined", classes="pa-2 text-center bg-white"):
+                            html.Div("Average Pressure", classes="text-overline text-grey-darken-1", style="line-height: 1;")
+                            html.Div("{{ average_pressure }} mmHg", classes="text-h6 font-weight-bold text-info")
+                    with v3.VCol():
+                        with v3.VCard(variant="outlined", classes="pa-2 text-center bg-white"):
+                            html.Div("Area", classes="text-overline text-grey-darken-1", style="line-height: 1;")
+                            html.Div("{{ area }} cm²", classes="text-h6 font-weight-bold text-info")
+                    with v3.VCol():
+                        with v3.VCard(variant="outlined", classes="pa-2 text-center bg-white"):
+                            html.Div("Status", classes="text-overline text-grey-darken-1", style="line-height: 1;")
+                            html.Div("{{ status }}", classes="text-h6 font-weight-bold text-warning")
+                
+                with v3.VRow(dense=True, justify="center", v_if="show_plot"):
+                    with v3.VCol():
+                        with v3.VCard(variant="outlined", classes="pa-2 text-center bg-white"):
+                            html.Div("Probed Pressure 1", classes="text-overline text-grey-darken-1", style="line-height: 1;")
+                            html.Div("{{ p1 }} mmHg", classes="text-h6 font-weight-bold text-cyan-darken-1")
+                    with v3.VCol():
+                        with v3.VCard(variant="outlined", classes="pa-2 text-center bg-white"):
+                            html.Div("Probed Pressure 2", classes="text-overline text-grey-darken-1", style="line-height: 1;")
+                            html.Div("{{ p2 }} mmHg", classes="text-h6 font-weight-bold text-cyan-darken-1")
+                    with v3.VCol():
+                        with v3.VCard(variant="outlined", classes="pa-2 text-center bg-white"):
+                            html.Div("Pressure Drop", classes="text-overline text-grey-darken-1", style="line-height: 1;")
+                            html.Div("{{ p_drop }} mmHg", classes="text-h6 font-weight-bold text-success")
+                    with v3.VCol():
+                        with v3.VCard(variant="outlined", classes="pa-2 text-center bg-white"):
+                            html.Div("Status", classes="text-overline text-grey-darken-1", style="line-height: 1;")
+                            html.Div("{{ status }}", classes="text-h6 font-weight-bold text-warning")
 
     # Start server
     server.start(host="127.0.0.1", port=1234)
